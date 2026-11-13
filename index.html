@@ -171,6 +171,25 @@ textarea { font: inherit; font-size: 14px; width: 100%; min-height: 58px; resize
   const UZUN = [["almazdim", "Almazdım"], ["hayal", "Hayal olarak"], ["zor", "Zor olarak"], ["gercekci", "Gerçekçi olarak"], ["guvenli", "Güvenli olarak"]];
   const UZUN_AD = { almazdim: "almazdım", hayal: "hayal", zor: "zor", gercekci: "gerçekçi", guvenli: "güvenli" };
   const LS = "okul-eslestirme-isaretler";
+  const UCNOKTA = "https://script.google.com/macros/s/AKfycbyQp_cCgeg-Q4_wF7m0ddvPVnNpEHxT-KD8l7Z51qEFhw0CrmnCx5q13-gLndCfOENGSg/exec".startsWith("https://") ? "https://script.google.com/macros/s/AKfycbyQp_cCgeg-Q4_wF7m0ddvPVnNpEHxT-KD8l7Z51qEFhw0CrmnCx5q13-gLndCfOENGSg/exec" : "";  // GitHub Pages kopyasında Google E-Tablo adresi
+  let bekleyen = {};
+  try { bekleyen = JSON.parse(localStorage.getItem(LS + "-bekleyen") || "{}") || {}; } catch (e) {}
+  function bekleyenYaz() { try { localStorage.setItem(LS + "-bekleyen", JSON.stringify(bekleyen)); } catch (e) {} }
+  function eTabloyaGonder(id, kayitEl) {
+    bekleyen[id] = true; bekleyenYaz();
+    if (kayitEl) kayitEl.textContent = "Kaydediliyor…";
+    yazimSirasi[id] = (yazimSirasi[id] || Promise.resolve()).then(() =>
+      fetch(UCNOKTA, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(Object.assign({ id }, isaretler[id])) })
+        .then(r => r.json()).then(j => { if (!j.ok) throw new Error(j.hata); delete bekleyen[id]; bekleyenYaz(); if (kayitEl) kayitEl.textContent = "Kaydedildi."; }))
+      .catch(() => { if (kayitEl) kayitEl.textContent = "Gönderilemedi; işaret bu tarayıcıda duruyor, bağlantı gelince yeniden gönderilecek."; });
+  }
+  function bekleyenleriGonder() { for (const id of Object.keys(bekleyen)) if (isaretler[id]) eTabloyaGonder(id, null); }
+  function hepsiniGoster() {
+    document.querySelectorAll(".isaret").forEach(el => el._goster());
+    const genel = document.querySelector(".genel-not textarea");
+    if (genel && document.activeElement !== genel) { const g = isaretler[genel.dataset.id]; genel.value = (g && g.not) || ""; }
+    toplamGuncelle();
+  }
   let db = null, isaretler = {}, aktif = VERI[0].ad;
   const yazimSirasi = {}, zamanlayici = {};
 
@@ -202,9 +221,10 @@ textarea { font: inherit; font-size: 14px; width: 100%; min-height: 58px; resize
 
   function kaydetYerel() { try { localStorage.setItem(LS, JSON.stringify(isaretler)); } catch (e) {} }
   function kaydet(id, kayitEl) {
+    if (isaretler[id]) isaretler[id].zaman = new Date().toISOString();
     kaydetYerel(); toplamGuncelle();
-    if (!db) { if (kayitEl) kayitEl.textContent = "Bu tarayıcıda tutuldu."; return; }
-    const veri = Object.assign({}, isaretler[id], { zaman: new Date().toISOString() });
+    if (!db) { if (UCNOKTA) eTabloyaGonder(id, kayitEl); else if (kayitEl) kayitEl.textContent = "Bu tarayıcıda tutuldu."; return; }
+    const veri = Object.assign({}, isaretler[id]);
     if (kayitEl) kayitEl.textContent = "Kaydediliyor…";
     yazimSirasi[id] = (yazimSirasi[id] || Promise.resolve()).then(() => db.collection("isaretler").doc(id).set(veri))
       .then(() => { if (kayitEl) kayitEl.textContent = "Kaydedildi."; })
@@ -337,6 +357,28 @@ textarea { font: inherit; font-size: 14px; width: 100%; min-height: 58px; resize
   (async function baglan() {
     let d = null;
     try { d = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { d = null; }
+    if (!d && UCNOKTA) {
+      durum("Kayıtlar yükleniyor…", false);
+      try {
+        const j = await fetch(UCNOKTA).then(r => r.json());
+        for (const r of j.isaretler || []) {
+          if (!r.id || bekleyen[r.id]) continue;
+          const yerel = isaretler[r.id];
+          if (yerel && yerel.zaman && r.zaman && yerel.zaman > r.zaman) continue;
+          const v = {};
+          for (const [k, x] of Object.entries(r)) if (k !== "id" && k !== "alindi") v[k] = x === "" ? null : x;
+          if (v.not == null) v.not = "";
+          isaretler[r.id] = v;
+        }
+        kaydetYerel(); hepsiniGoster();
+        durum("İşaretler otomatik kaydediliyor; Murat görüyor. Başka cihazdan açarsanız kaldığınız yerden devam eder.", true);
+      } catch (e) {
+        durum("Kayda şu an ulaşılamıyor; işaretleriniz bu tarayıcıda tutuluyor ve bağlantı gelince gönderilecek.", false);
+      }
+      bekleyenleriGonder();
+      window.addEventListener("online", bekleyenleriGonder);
+      return;
+    }
     if (!d) { durum("İşaretler bu tarayıcıda tutuluyor. Bitince en alttaki düğmeyle kopyalayıp Murat'a gönderin.", false); return; }
     db = d;
     const sure = setTimeout(() => durum("Kayıtlara şu an ulaşılamıyor; işaretleriniz bu tarayıcıda tutuluyor.", false), 10000);
